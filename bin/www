@@ -1,0 +1,130 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('dhud-web-v:server');
+var http = require('http');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+var io = require('socket.io')(server);
+var cv = require('opencv4nodejs');
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+io.on('connection', function(socket){
+  socket.on('image', function(data){
+    const base64text=data;
+    const base64data =base64text.replace('data:image/jpeg;base64','')
+                                .replace('data:image/png;base64','');
+    const buffer = Buffer.from(base64data,'base64');
+    const image = cv.imdecode(buffer);
+
+    let grey = image.cvtColor(cv.COLOR_BGR2GRAY);
+    let blur = grey.gaussianBlur(new cv.Size(5, 5), 0);
+    let edges = blur.canny(50, 150);
+
+    let lineImage = new cv.Mat(edges.rows, edges.cols, 0, 0);
+    let lines = edges.houghLines(1, Math.PI/180, 200);
+    let pLines = edges.houghLinesP(1, Math.PI/180, 200, 40, 10);
+    for (let i = 0; i < lines.length; i++) {
+        let [rho, theta] = [lines[i].x, lines[i].y];
+        let [a, b] = [Math.cos(theta), Math.sin(theta)];
+        let [x0, y0] = [a * rho, b * rho];
+        let x1 = Math.round(x0 + 1000 * (-b));
+        let y1 = Math.round(y0 + 1000 * (a));
+        let x2 = Math.round(x0 - 1000 * (-b));
+        let y2 = Math.round(y0 + 1000 * (a));
+        lineImage.drawLine(new cv.Point(x1, y1), new cv.Point(x2, y2), new cv.Vec3(255, 0, 0), 2);
+
+        let line = pLines[i];
+        if (line) {
+            let [x1, y1, x2, y2] = [line.y, line.x, line.w, line.z];
+            lineImage.drawLine(new cv.Point(x1, y1), new cv.Point(x2, y2), new cv.Vec3(255, 0, 0), 3);
+        }
+    }
+    let lineMasked = edges.addWeighted(0.8, lineImage, 1, 0);
+
+    const outBase64 =  cv.imencode('.jpg', lineMasked).toString('base64');    
+    socket.emit('server_send_image', outBase64);
+  })
+})
+
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
